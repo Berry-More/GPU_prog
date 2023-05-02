@@ -12,10 +12,6 @@ void makeGrid(double* outArray, int arraySize)
             outArray[i * arraySize + j] = 0;
     }
     
-    // 10, 20, 30, 20 - исправить
-    // пересчитать значения 10е-6 ошибка 10е6 кол-во итераций
-    // на цп для 1024 не считать
-    //#pragma acc parallel loop independent
     for (int j = 0; j < arraySize; j++)
     {
         outArray[j] = 10.0 + 10.0 * j / (arraySize - 1);
