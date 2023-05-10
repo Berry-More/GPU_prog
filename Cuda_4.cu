@@ -31,10 +31,10 @@ __global__ void calcMatrix(double* Array1, double* Array2, int arraySize)
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i > 0 && i < arraySize-1 && j > 0 && j < arraySize-1)
-        Array1[i * arraySize + j] = (Array2[(i - 1) * arraySize + (j + 1)]
-                                    + Array2[(i - 1) * arraySize + (j - 1)]
-                                    + Array2[(i + 1) * arraySize + (j + 1)]
-                                    + Array2[(i + 1) * arraySize + (j - 1)]) / 4;
+        Array1[i * arraySize + j] = (Array2[(i + 1) * arraySize + (j + 1)]
+                                    + Array2[(i + 1) * arraySize + (j - 1)]
+                                    + Array2[(i - 1) * arraySize + (j + 1)]
+                                    + Array2[(i - 1) * arraySize + (j - 1)]) / 4;
 }
 
 __global__ void matrixDiff(double* Array1, double* Array2, int arraySize)
@@ -86,11 +86,11 @@ int main(int argc, char* argv[])
         gridParam = 16;
     int blockParam = size / gridParam;
 
-    dim3 threadsPerBlock(gridParam, gridParam);
-    dim3 numBlocks(blockParam, blockParam);
+    dim3 BS(size, 1);
+	dim3 GS(ceil(size/(float)BS.x), ceil(size/(float)BS.y));
 
-    makeGrid<<<numBlocks, threadsPerBlock>>>(dA1, size);
-    makeGrid<<<numBlocks, threadsPerBlock>>>(dA2, size);
+    makeGrid<<<BS, GS>>>(dA1, size);
+    makeGrid<<<BS, GS>>>(dA2, size);
     setBorders<<<blockParam, gridParam>>>(dA1, size);
     setBorders<<<blockParam, gridParam>>>(dA2, size);
 
@@ -104,17 +104,21 @@ int main(int argc, char* argv[])
     cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, dA1, d_currentError, size*size);
     cudaMalloc(&d_temp_storage, temp_storage_bytes);
 
+    cudaStream_t stream;
+    cudaStreamCreate(&stream);
+
     // calculations
     clock_t start = clock();
     int k = 0;
     while (k < iterations & currentError > error)
     {
-        calcMatrix<<<numBlocks, threadsPerBlock>>>(dA1, dA2, size);
-        calcMatrix<<<numBlocks, threadsPerBlock>>>(dA2, dA1, size);
+        calcMatrix<<<BS, GS, 0, stream>>>(dA1, dA2, size);
+        calcMatrix<<<BS, GS, 0, stream>>>(dA2, dA1, size);
 
         if (k % 100 == 0)
         {
-            matrixDiff<<<numBlocks, threadsPerBlock>>>(dA1, dA2, size);
+            cudaStreamSynchronize(stream);
+            matrixDiff<<<BS, GS>>>(dA1, dA2, size);
             cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, dA1, d_currentError, size*size);
             cudaMemcpy(&currentError, d_currentError, sizeof(double), cudaMemcpyDeviceToHost);
             setBorders<<<blockParam, gridParam>>>(dA1, size);
@@ -127,6 +131,7 @@ int main(int argc, char* argv[])
     printf("Number of iterations: %i\n", k);
     printf("Time: %lf\n", (double)(end - start) / CLOCKS_PER_SEC);
 
+    cudaStreamDestroy(stream);
     free(A1); free(A2);
     cudaFree(dA1); cudaFree(dA2);
     return 0;
