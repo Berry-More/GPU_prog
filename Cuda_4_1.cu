@@ -6,8 +6,6 @@
 #include <cub/device/device_reduce.cuh>
 #include <cub/block/block_reduce.cuh>
 
-#define NUM_OF_BLOCKS   128
-
 
 __global__ void makeGrid(double* outArray, int arraySize)
 {
@@ -40,27 +38,18 @@ __global__ void calcMatrix(double* Array1, double* Array2, int arraySize)
                                     + Array2[(j - 1) * arraySize + (i - 1)]) / 4;
 }
 
-__global__ void matrixDiff(double* Array1, double* Array2, int arraySize)
+__global__ void matrixDiff(double* Array1, double* Array2, double* d_out, int arraySize)
 {
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
-    Array1[i * arraySize + j] = fabs(Array2[i * arraySize + j] - Array1[i * arraySize + j]);
-}
-
-template <int BLOCK_THREADS>
-__global__ void MyReduce(double *d_in, double* d_out, int arraySize)
-{
-    size_t i = blockIdx.x * blockDim.x + threadIdx.x;
-    size_t j = blockIdx.y * blockDim.y + threadIdx.y;
-    typedef cub::BlockReduce<double, BLOCK_THREADS> BlockReduce;
+    typedef cub::BlockReduce<double, 128> BlockReduce;
     __shared__ typename BlockReduce::TempStorage temp_storage;
-
     double data = 0;
-    data = d_in[i * arraySize + j];
-    double aggregate = BlockReduce(temp_storage).Reduce(data, cub::Max());
-    if (threadIdx.x == 0)
-        d_out[blockIdx.x] = aggregate;
+    data = fabs(Array2[i * arraySize + j] - Array1[i * arraySize + j]);
 
+    double true_value = BlockReduce(temp_storage).Reduce(data, cub::Max());
+    if (threadIdx.x == 0)
+	    d_out[blockIdx.y] = true_value;
 }
 
 
@@ -105,7 +94,7 @@ int main(int argc, char* argv[])
         gridParam = 16;
     int blockParam = size / gridParam;
 
-    dim3 BS(size, 1);
+    dim3 BS(gridParam, gridParam);
 	dim3 GS(ceil(size/(float)BS.x), ceil(size/(float)BS.y));
 
     makeGrid<<<BS, GS>>>(dA1, size);
@@ -118,49 +107,42 @@ int main(int argc, char* argv[])
     double *d_currentError;
     cudaMalloc(&d_currentError, sizeof(double));
 
+    // array for cub block
+    int size_of_blocks = GS.x + GS.y;
+    double* blocks_data;
+    cudaMalloc(&blocks_data, size_of_blocks * sizeof(double));
+
+    // cub_device functions preparing
     void *d_temp_storage = NULL;
     size_t temp_storage_bytes = 0;
-    cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, dA1, d_currentError, size*size);
+    cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, blocks_data, d_currentError, size_of_blocks);
     cudaMalloc(&d_temp_storage, temp_storage_bytes);
 
     cudaStream_t stream;
     cudaStreamCreate(&stream);
-    bool graphCreated = false;
     cudaGraph_t graph;
-    cudaGraphExec_t instance;
-
-    double* cub_result;
-    cudaMalloc(&cub_result, NUM_OF_BLOCKS * sizeof(double));
+	cudaGraphExec_t instance;
+    cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
+    for (int i = 0; i < 50; i++)
+    {
+        calcMatrix<<<BS, GS, 0, stream>>>(dA1, dA2, size);
+        calcMatrix<<<BS, GS, 0, stream>>>(dA2, dA1, size);
+    }
+    cudaStreamEndCapture(stream, &graph);
+	cudaGraphInstantiate(&instance, graph, NULL, NULL, 0);
 
     // calculations
     clock_t start = clock();
     int k = 0;
-    while (k < iterations & currentError > error)
+    while (k < iterations && currentError > error)
     {
-        
-        if(!graphCreated)
-        {
-            cudaStreamBeginCapture(stream, cudaStreamCaptureModeGlobal);
-            calcMatrix<<<BS, GS, 0, stream>>>(dA1, dA2, size);
-            calcMatrix<<<BS, GS, 0, stream>>>(dA2, dA1, size);
-            cudaStreamEndCapture(stream, &graph);
-            cudaGraphInstantiate(&instance, graph, NULL, NULL, 0);
-            graphCreated=true;
-        }
-
         cudaGraphLaunch(instance, stream);
         cudaStreamSynchronize(stream);
-
-        if (k % 100 == 0)
-        {
-            cudaStreamSynchronize(stream);
-            matrixDiff<<<BS, GS>>>(dA1, dA2, size);
-            MyReduce<NUM_OF_BLOCKS><<<BS, GS>>>(dA1, cub_result, NUM_OF_BLOCKS);
-            cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, cub_result, d_currentError, NUM_OF_BLOCKS);
-            cudaMemcpy(&currentError, d_currentError, sizeof(double), cudaMemcpyDeviceToHost);
-            setBorders<<<blockParam, gridParam>>>(dA1, size);
-        }
-        k += 2;
+        matrixDiff<<<BS, GS>>>(dA1, dA2, blocks_data, size);
+        cudaStreamSynchronize(stream);
+        cub::DeviceReduce::Max(d_temp_storage, temp_storage_bytes, blocks_data, d_currentError, size_of_blocks);
+        cudaMemcpy(&currentError, d_currentError, sizeof(double), cudaMemcpyDeviceToHost);
+        k += 100;
     }
     clock_t end = clock();
 
