@@ -31,10 +31,10 @@ __global__ void calcMatrix(double* Array1, double* Array2, int arraySize)
     int i = blockIdx.x * blockDim.x + threadIdx.x;
     int j = blockIdx.y * blockDim.y + threadIdx.y;
     if (i > 0 && i < arraySize-1 && j > 0 && j < arraySize-1)
-        Array1[i * arraySize + j] = (Array2[(i + 1) * arraySize + (j + 1)]
-                                    + Array2[(i + 1) * arraySize + (j - 1)]
-                                    + Array2[(i - 1) * arraySize + (j + 1)]
-                                    + Array2[(i - 1) * arraySize + (j - 1)]) / 4;
+        Array1[i * arraySize + j] = (Array2[(j + 1) * arraySize + (i + 1)]
+                                    + Array2[(j + 1) * arraySize + (i - 1)]
+                                    + Array2[(j - 1) * arraySize + (i + 1)]
+                                    + Array2[(j - 1) * arraySize + (i - 1)]) / 4;
 }
 
 __global__ void matrixDiff(double* Array1, double* Array2, int arraySize)
